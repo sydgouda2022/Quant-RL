@@ -73,17 +73,13 @@ class MT5Broker(MT5DataSource):
         info=m.symbol_info(symbol)
         if info is None:
             raise ConnectionError('Missing broker symbol details')
-        # SYMBOL_FILLING_MODE is a bitmask; 1=FOK, 2=IOC. RETURN is
-        # prohibited under MARKET execution. Never guess unsupported modes.
+        # Quant-RL does not support partial fills. Require Fill-or-Kill (FOK)
+        # and reject symbols that advertise only IOC/RETURN execution.
+        # FOK is the only mode that executes the full requested volume or none.
         flags=int(info.filling_mode)
-        if flags & 2:
-            filling=m.ORDER_FILLING_IOC
-        elif flags & 1:
-            filling=m.ORDER_FILLING_FOK
-        elif int(info.trade_exemode)!=int(getattr(m,'SYMBOL_TRADE_EXECUTION_MARKET',2)):
-            filling=m.ORDER_FILLING_RETURN
-        else:
-            raise ValueError('MT5 symbol does not advertise a supported filling mode')
+        if not (flags & 1):
+            raise ValueError('MT5 symbol does not support FOK; partial-fill modes are disabled')
+        filling=m.ORDER_FILLING_FOK
         return dict(action=m.TRADE_ACTION_DEAL,symbol=symbol,
             type=(m.ORDER_TYPE_BUY if direction=='BUY' else m.ORDER_TYPE_SELL),
             volume=float(volume),price=float(price),sl=float(sl),tp=float(tp),
