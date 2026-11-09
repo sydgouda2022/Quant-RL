@@ -46,11 +46,8 @@ class FrozenDataset:
     manifest: DataCoverageManifest
     fallback_spread_points: float | None = None
     broker_server: str = ""
-
-    @property
-    def m1_ordered(self) -> bool:
-        """True when M1 timestamps were validated as strictly increasing during freeze()."""
-        return len(self.m1_time_s) > 0
+    # Set only by freeze() after validating every timestamp in the M1 stream.
+    m1_ordered: bool = False
 
 
 class MT5History:
@@ -297,4 +294,5 @@ class MT5History:
             manifest=manifest,
             fallback_spread_points=fallback_spread_points,
             broker_server=broker_server,
+            m1_ordered=bool(len(m1_time_s) > 0),
         )
