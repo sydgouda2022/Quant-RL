@@ -96,6 +96,13 @@ class MT5Broker(MT5DataSource):
             # Unknown state: broker may have accepted before connection dropped.
             raise ConnectionError('MT5 order outcome unknown; do not retry automatically')
         code=int(result.retcode)
+        partial_code=getattr(self._mt5,'TRADE_RETCODE_DONE_PARTIAL',None)
+        if partial_code is not None and code==int(partial_code):
+            # FOK should make this impossible. Never represent a broker-reported
+            # partial execution as a successful full-volume trade.
+            return {'status':'PARTIAL_FILL_UNSUPPORTED','retcode':code,
+                    'order':int(getattr(result,'order',0)),
+                    'deal':int(getattr(result,'deal',0))}
         if code!=int(self._mt5.TRADE_RETCODE_DONE):
             return {'status':'REJECTED_OR_UNCERTAIN','retcode':code}
         return {'status':'FILLED','retcode':code,'order':int(getattr(result,'order',0)),
