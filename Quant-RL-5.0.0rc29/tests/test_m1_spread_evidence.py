@@ -77,6 +77,17 @@ def test_m1_covered_bar_count_is_not_minute_count(tmp_path):
     assert result.manifest.m1_window_coverage_fraction == 0.5
 
 
+def test_frozen_dataset_carries_m1_ordering_certificate():
+    store=MT5History()
+    spec=default_symbol_spec('EURUSD')
+    h1=[OHLCVBar(T+j*3600,1.1,1.1005,1.0995,1.1,100,2.) for j in range(2)]
+    m1=[OHLCVBar(T+j*60,1.1,1.1002,1.0998,1.1,10,2.) for j in range(4)]
+    frozen=store.freeze('EURUSD','H1',h1,spec,m1_bars=m1)
+    empty=store.freeze('EURUSD','H1',h1,spec,m1_bars=[])
+    assert frozen.m1_ordered is True
+    assert empty.m1_ordered is False
+
+
 
 def test_prevalidated_m1_ordering_skips_full_array_scan(monkeypatch):
     # The simulator validates the complete M1 timestamp array once per replay,
