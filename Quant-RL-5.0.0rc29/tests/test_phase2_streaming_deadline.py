@@ -187,3 +187,64 @@ def test_ppo_fit_passes_deadline_to_training_and_validation_replays(monkeypatch)
     )
 
     assert calls == [deadline, deadline]
+
+
+
+def test_freeze_checks_deadline_after_short_stream_finishes(monkeypatch):
+    import quant_rl.data.mt5_history as history_module
+
+    bars = [OHLCVBar(1704067200 + 3600 * i, 1.1, 1.1002, 1.0998, 1.1, 100, 2.0)
+            for i in range(2)]
+
+    def stream():
+        for i in range(10):
+            ts = 1704067200 + i * 60
+            yield OHLCVBar(ts, 1.1, 1.1002, 1.0998, 1.1, 10, 1.5)
+
+    clock = iter((0.0, 2.0))
+    monkeypatch.setattr(history_module.time, "monotonic", lambda: next(clock))
+    with pytest.raises(TimeoutError, match="deadline"):
+        MT5History().freeze(
+            "EURUSD", "H1", bars, default_symbol_spec("EURUSD"),
+            m1_bars=stream(), deadline_monotonic=1.0,
+        )
+
+
+def test_iter_m1_range_checks_deadline_during_large_response_chunk(monkeypatch):
+    import quant_rl.data.mt5_source as source_module
+    from quant_rl.data.mt5_source import MT5DataSource
+
+    start = 1704067200
+    yielded = []
+
+    def rates():
+        for i in range(4097):
+            yielded.append(i)
+            yield {
+                "time": start + i * 60, "open": 1.1, "high": 1.1002,
+                "low": 1.0998, "close": 1.1, "tick_volume": 10, "spread": 2,
+            }
+
+    class FakeMT5:
+        TIMEFRAME_M1 = 1
+
+        def symbol_select(self, symbol, enabled):
+            return True
+
+        def copy_rates_range(self, *args):
+            return rates()
+
+        def last_error(self):
+            return (0, "ok")
+
+    source = MT5DataSource.__new__(MT5DataSource)
+    source._mt5 = FakeMT5()
+    # Before request, after request, first row, then row 4096 (expired).
+    clock = iter((0.0, 0.0, 0.0, 2.0))
+    monkeypatch.setattr(source_module.time, "monotonic", lambda: next(clock))
+
+    with pytest.raises(TimeoutError, match="deadline"):
+        list(source.iter_m1_range(
+            "EURUSD", start, start + 4097 * 60, deadline_monotonic=1.0
+        ))
+    assert len(yielded) == 4097
