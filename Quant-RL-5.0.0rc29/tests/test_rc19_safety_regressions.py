@@ -111,11 +111,16 @@ def test_pending_deal_recovery_requires_exact_broker_identity(tmp_path):
     state=session._load_state(broker.account())
     marker='QRL1700000000'
     state.update(status='PENDING',request_id=marker,submit_time_s=int(time.time()),last_bar_time_s=1700000000,
-        requested_volume_lots=0.1,requested_direction='BUY')
+        requested_volume_lots=0.1,requested_direction='BUY',
+        requested_sl_price=1.09,requested_tp_price=1.12,
+        broker_point=broker.spec.point,broker_tick_size=broker.spec.trade_tick_size)
     broker._mt5.DEAL_ENTRY_IN=0
     broker._mt5.DEAL_TYPE_BUY=0
     broker._mt5.DEAL_TYPE_SELL=1
     store_json(session._journal(broker.account_id),state)
+    broker._positions=[NS(magic=session.cfg.live.magic,symbol='EURUSD',
+        comment=marker,type=broker._mt5.POSITION_TYPE_BUY,volume=0.1,
+        sl=1.09,tp=1.12,ticket=74)]
     broker.recent_deals=lambda since:[NS(magic=session.cfg.live.magic,symbol='EURUSD',comment=marker,
         entry=0,type=0,volume=0.1,ticket=73)]
     assert session.step()['status']=='RECOVERED_FILLED'
