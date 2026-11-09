@@ -177,6 +177,9 @@ class MT5History:
             else:
                 # Test doubles and external adapters predating the streaming contract.
                 m1=mt5_src.fetch_m1_range(symbol,bars[0].time_s,m1_end)
+        except TimeoutError:
+            # A session deadline is a control-flow signal, not an MT5 connection failure.
+            raise
         except Exception as exc:
             raise ConnectionError(f'MT5 data acquisition failed for {symbol}: {exc}') from exc
         finally:
@@ -210,7 +213,7 @@ class MT5History:
         m1_spreads = typed_array('d')
         previous_m1 = None
         for row_index, bar in enumerate(() if m1_bars is None else m1_bars):
-            if row_index % 100_000 == 0 and deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
+            if row_index % 4_096 == 0 and deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
                 raise TimeoutError(f'Research session deadline reached while freezing M1 evidence for {symbol}')
             if (bar.time_s < 0 or bar.time_s % 60
                     or (previous_m1 is not None and bar.time_s <= previous_m1)
