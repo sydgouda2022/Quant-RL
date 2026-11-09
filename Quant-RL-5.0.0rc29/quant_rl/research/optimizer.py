@@ -188,7 +188,8 @@ def optimize_candidate(cfg,obs,spec,train,val,m1,seed_lookup=None,study_path=Non
             score=trader.fit(obs,spec,train,val,cfg,trial_seed,m1=m1,
                              callback=on_epoch,checkpoint_path=trial_checkpoint,
                              deadline_monotonic=deadline)
-            best_validation,_=trader.replay(obs,spec,val,cfg,deterministic=True,m1=m1)
+            best_validation,_=trader.replay(obs,spec,val,cfg,deterministic=True,m1=m1,
+                                                   deadline_monotonic=deadline)
             result={'trial':trial.number,'validation_reward_account_ccy':score,
                     'validation_ending_equity':best_validation.ending_equity,
                     'seed_from':source,'decision_diagnostics':trial_decision_diagnostics(best_validation),

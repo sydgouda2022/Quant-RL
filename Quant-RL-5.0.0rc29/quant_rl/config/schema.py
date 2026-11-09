@@ -213,6 +213,15 @@ class QuantRLConfig(BaseModel):
     broker_connection: BrokerConnectionConfig = Field(default_factory=BrokerConnectionConfig)
     project_root: str = "."
 
+    @model_validator(mode="after")
+    def validate_live_execution_bounds(self) -> QuantRLConfig:
+        # Broker deviation must fit inside the slippage bound used by risk checks.
+        if self.live.order_deviation_points > self.execution.max_slippage_points:
+            raise ValueError(
+                "live.order_deviation_points cannot exceed execution.max_slippage_points"
+            )
+        return self
+
     @property
     def policy_hash(self) -> str:
         # This is the deployability certificate, not a hash of every research

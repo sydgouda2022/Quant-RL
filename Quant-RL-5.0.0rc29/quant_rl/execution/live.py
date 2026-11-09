@@ -95,6 +95,43 @@ class LiveSession:
             'last_bar_time_s':0,'status':'READY','peak_equity':float(account.equity),
             'initial_equity':float(account.equity)}
 
+    def _matching_open_position(self, state: dict):
+        marker=str(state.get('request_id') or '')
+        matches=[p for p in self.broker.positions()
+            if int(getattr(p,'magic',-1) or -1)==self.cfg.live.magic
+            and str(getattr(p,'symbol',''))==self.symbol
+            and str(getattr(p,'comment',''))==marker]
+        if len(matches)!=1:
+            raise RuntimeError('Filled MT5 order has no unique matching open position; manual reconciliation required')
+        position=matches[0]
+        direction=state.get('requested_direction')
+        expected_type=getattr(self.broker._mt5,
+            'POSITION_TYPE_BUY' if direction=='BUY' else 'POSITION_TYPE_SELL',None)
+        expected_volume=float(state.get('requested_volume_lots') or 0)
+        actual_volume=float(getattr(position,'volume',0) or 0)
+        tolerance=max(1e-8,expected_volume*1e-6)
+        if (direction not in ('BUY','SELL') or expected_type is None
+                or getattr(position,'type',None)!=expected_type
+                or not math.isfinite(actual_volume)
+                or abs(actual_volume-expected_volume)>tolerance):
+            raise RuntimeError('Filled MT5 position identity, direction, or volume is inconsistent; manual reconciliation required')
+        expected_sl=float(state.get('requested_sl_price') or 0)
+        expected_tp=float(state.get('requested_tp_price') or 0)
+        point=float(state.get('broker_point') or 0)
+        tick=float(state.get('broker_tick_size') or 0)
+        actual_sl=float(getattr(position,'sl',0) or 0)
+        actual_tp=float(getattr(position,'tp',0) or 0)
+        tolerance_price=max(point*0.5,tick*0.5,1e-10)
+        if (not all(math.isfinite(v) for v in
+                    (expected_sl,expected_tp,point,tick,actual_sl,actual_tp))
+                or min(expected_sl,expected_tp,point,tick,actual_sl,actual_tp)<=0
+                or abs(actual_sl-expected_sl)>tolerance_price
+                or abs(actual_tp-expected_tp)>tolerance_price
+                or (direction=='BUY' and not actual_sl < actual_tp)
+                or (direction=='SELL' and not actual_tp < actual_sl)):
+            raise RuntimeError('Broker position SL/TP protection is missing or differs from requested levels; manual reconciliation required')
+        return position
+
     def _reconcile_pending(self, state: dict, account) -> dict:
         """Recognize confirmed MT5 outcomes after a crash without guessing absence.
 
@@ -102,6 +139,9 @@ class LiveSession:
         authenticated broker order/position/deal with our exact request marker,
         configured magic and symbol can close the pending journal entry.
         """
+        prior_result=state.get('result') or {}
+        if prior_result.get('status')=='PARTIAL_FILL_UNSUPPORTED':
+            raise RuntimeError('Broker reported an unsupported partial fill despite FOK; manual reconciliation required')
         marker=str(state.get('request_id') or '')
         if not marker or not marker.startswith('QRL'):
             raise RuntimeError('Pending MT5 request has no valid marker; operator reconciliation required')
@@ -114,14 +154,48 @@ class LiveSession:
         positions=self.broker.positions()
         orders=self.broker.orders()
         deals=self.broker.recent_deals(since)
-        confirmations=[d for d in deals if matches(d)]
-        if confirmations:
+        expected_volume=state.get('requested_volume_lots')
+        expected_direction=state.get('requested_direction')
+        if (expected_volume is None or expected_direction not in ('BUY','SELL')
+                or not math.isfinite(float(expected_volume)) or float(expected_volume)<=0):
+            raise RuntimeError('Pending MT5 request lacks its expected volume/direction; manual reconciliation required')
+
+        # A matching deal is execution evidence, not proof of a full FOK fill.
+        # Aggregate only entry deals for this exact request and verify both side
+        # and total executed volume before accepting recovery as FILLED.
+        matching_deals=[d for d in deals if matches(d)]
+        entry_in=getattr(self.broker._mt5,'DEAL_ENTRY_IN',None)
+        buy_type=getattr(self.broker._mt5,'DEAL_TYPE_BUY',None)
+        sell_type=getattr(self.broker._mt5,'DEAL_TYPE_SELL',None)
+        execution_deals=[d for d in matching_deals
+            if entry_in is not None and getattr(d,'entry',None)==entry_in]
+        if execution_deals:
+            expected_type=buy_type if expected_direction=='BUY' else sell_type
+            if expected_type is None or any(getattr(d,'type',None)!=expected_type
+                    for d in execution_deals):
+                raise RuntimeError('Recovered MT5 deal direction is inconsistent; manual reconciliation required')
+            executed_volume=sum(float(getattr(d,'volume',0) or 0) for d in execution_deals)
+            tolerance=max(1e-8,float(expected_volume)*1e-6)
+            if (not math.isfinite(executed_volume)
+                    or abs(executed_volume-float(expected_volume))>tolerance):
+                raise RuntimeError('Recovered MT5 deal volume is not an exact full fill; manual reconciliation required')
+            position=self._matching_open_position(state)
             state.update(status='FILLED',recovery='MT5_DEAL_HISTORY',
-                recovered_deal_ids=[int(getattr(d,'ticket',0) or 0) for d in confirmations])
+                recovered_deal_ids=[int(getattr(d,'ticket',0) or 0) for d in execution_deals],
+                recovered_executed_volume_lots=executed_volume,
+                broker_position_ticket=int(getattr(position,'ticket',0) or 0),
+                protection_verified=True)
             store_json(self._journal(account.login),state)
             return {'status':'RECOVERED_FILLED','decision_time_s':int(state['last_bar_time_s'])}
-        if any(matches(position) for position in positions):
-            state.update(status='FILLED',recovery='MT5_OPEN_POSITION')
+
+        matching_positions=[position for position in positions if matches(position)]
+        if matching_positions:
+            position=self._matching_open_position(state)
+            position_volume=float(getattr(position,'volume',0) or 0)
+            state.update(status='FILLED',recovery='MT5_OPEN_POSITION',
+                recovered_executed_volume_lots=position_volume,
+                broker_position_ticket=int(getattr(position,'ticket',0) or 0),
+                protection_verified=True)
             store_json(self._journal(account.login),state)
             return {'status':'RECOVERED_OPEN_POSITION','decision_time_s':int(state['last_bar_time_s'])}
         if any(matches(order) for order in orders):
@@ -377,15 +451,20 @@ class LiveSession:
         side=m.ORDER_TYPE_BUY if direction=='BUY' else m.ORDER_TYPE_SELL
         estimated_loss=m.order_calc_profit(side,self.symbol,volume,price,sl)
         slippage_price=self.cfg.execution.max_slippage_points*spec.point
+        # Stress both adverse entry movement and stop execution beyond its trigger.
+        # Config validation ensures broker deviation cannot exceed this bound.
+        worst_entry=price+slippage_price if direction=='BUY' else price-slippage_price
         worst_sl=sl-slippage_price if direction=='BUY' else sl+slippage_price
-        stressed_loss=m.order_calc_profit(side,self.symbol,volume,price,worst_sl)
-        margin=m.order_calc_margin(side,self.symbol,volume,price)
+        stressed_loss=m.order_calc_profit(side,self.symbol,volume,worst_entry,worst_sl)
+        margin=m.order_calc_margin(side,self.symbol,volume,worst_entry)
+        free_margin=float(getattr(a2,'margin_free',float('nan')))
         estimated_commission=volume*self.cfg.execution.commission_per_lot_round_trip
         if (margin is None or estimated_loss is None or stressed_loss is None
                 or not all(math.isfinite(float(v)) for v in (margin,estimated_loss,stressed_loss))
+                or not math.isfinite(free_margin) or free_margin < 0 or float(margin) <= 0
                 or estimated_loss>=0 or stressed_loss>=0
                 or -float(stressed_loss)+estimated_commission>float(a2.equity)*proposal.requested_risk_fraction+1e-6
-                or float(margin)>float(a2.margin_free)):
+                or float(margin)>free_margin):
             state['status']='VETOED_BROKER_CALC'
             store_json(self._journal(a.login),state)
             return {'status':'VETOED_BROKER_CALC','decision_time_s':bar_time}
@@ -396,7 +475,10 @@ class LiveSession:
             magic=self.cfg.live.magic,comment=comment)
         # Persist the intent BEFORE calling order_send; a crash or timeout
         # never causes an automatic duplicate submission on restart.
-        state.update(status='PENDING',request_id=comment,submit_time_s=int(time.time()))
+        state.update(status='PENDING',request_id=comment,submit_time_s=int(time.time()),
+            requested_volume_lots=float(volume),requested_direction=direction,
+            requested_sl_price=float(sl),requested_tp_price=float(tp),
+            broker_point=float(spec.point),broker_tick_size=float(spec.trade_tick_size))
         store_json(self._journal(a.login),state)
         if (kill_switch_engaged(Path(self.cfg.project_root)) or
                 operator_blackout_active(Path(self.cfg.project_root),
@@ -408,7 +490,15 @@ class LiveSession:
             store_json(self._journal(a.login),state)
             return {'status':'HALTED_BEFORE_SEND','decision_time_s':bar_time}
         outcome=self.broker.submit(request)
-        state.update(status=outcome['status'] if outcome['status'] in ('FILLED','CHECK_REJECTED') else 'PENDING',result=outcome)
+        if outcome['status']=='FILLED':
+            state.update(status='PENDING',result=outcome)
+            store_json(self._journal(a.login),state)
+            position=self._matching_open_position(state)
+            state.update(status='FILLED',protection_verified=True,
+                broker_position_ticket=int(getattr(position,'ticket',0) or 0))
+        else:
+            state.update(status='CHECK_REJECTED' if outcome['status']=='CHECK_REJECTED' else 'PENDING',
+                result=outcome)
         store_json(self._journal(a.login),state)
         return {'decision_time_s':bar_time,**outcome}
 

@@ -34,6 +34,8 @@ def stable_market_clock(monkeypatch):
 class FakeTerminal:
     ORDER_TYPE_BUY=0
     ORDER_TYPE_SELL=1
+    POSITION_TYPE_BUY=0
+    POSITION_TYPE_SELL=1
     def order_calc_profit(self,side,symbol,volume,entry,sl):
         return (sl-entry)*(1 if side==0 else -1)*100000*volume
     def order_calc_margin(self,side,symbol,volume,price):
@@ -49,6 +51,7 @@ class FakeBroker:
         self._orders=[]
         self.calls=0
         self.fail_uncertain=False
+        self.position_protection_override=None
         self.tick_time=int(time.time())
     def account(self):
         return SimpleNamespace(login=self.account_id,equity=10000.0,balance=10000.0,
@@ -71,6 +74,13 @@ class FakeBroker:
         self.calls+=1
         if self.fail_uncertain:
             raise ConnectionError('unknown order outcome')
+        position=SimpleNamespace(magic=request['magic'],symbol=request['symbol'],
+            comment=request['comment'],type=(0 if request['direction']=='BUY' else 1),
+            volume=float(request['volume']),sl=float(request['sl']),tp=float(request['tp']),
+            ticket=123)
+        if self.position_protection_override:
+            position.sl,position.tp=self.position_protection_override
+        self._positions=[position]
         return {'status':'FILLED','retcode':10009,'order':121,'deal':122}
 
 
@@ -247,12 +257,13 @@ class FakeMT5API:
     ORDER_TIME_GTC=0
     SYMBOL_TRADE_EXECUTION_MARKET=2
     TRADE_RETCODE_DONE=10009
+    TRADE_RETCODE_DONE_PARTIAL=10010
     def __init__(self):
         self.checked=0;self.sent=0
         self._check=SimpleNamespace(retcode=0)
         self._send=SimpleNamespace(retcode=10009,order=10,deal=11)
     def symbol_info(self,symbol):
-        return SimpleNamespace(filling_mode=2,trade_exemode=2)
+        return SimpleNamespace(filling_mode=3,trade_exemode=2)
     def order_check(self,request):
         self.checked+=1;return self._check
     def order_send(self,request):
@@ -267,9 +278,30 @@ def test_mt5_adapter_prechecks_then_sends_identically_for_any_account():
         broker.login=login
         request=broker.order_request(symbol='EURUSD',direction='BUY',volume=.1,
             price=1.1,sl=1.09,tp=1.12,deviation=10,magic=520052,comment='QRL123')
-        assert request['type_filling']==broker._mt5.ORDER_FILLING_IOC
+        assert request['type_filling']==broker._mt5.ORDER_FILLING_FOK
         assert broker.submit(request)=={'status':'FILLED','retcode':10009,'order':10,'deal':11}
         assert broker._mt5.checked==1 and broker._mt5.sent==1
+
+
+def test_mt5_adapter_rejects_symbols_without_fok_partial_fills_disabled():
+    from quant_rl.execution.mt5_broker import MT5Broker
+    broker=object.__new__(MT5Broker)
+    broker._mt5=FakeMT5API()
+    broker._mt5.symbol_info=lambda symbol: SimpleNamespace(filling_mode=2,trade_exemode=2)
+    with pytest.raises(ValueError,match='does not support FOK'):
+        broker.order_request(symbol='EURUSD',direction='BUY',volume=.1,
+            price=1.1,sl=1.09,tp=1.12,deviation=10,magic=520052,comment='QRL123')
+
+
+def test_mt5_adapter_never_reports_partial_execution_as_filled():
+    from quant_rl.execution.mt5_broker import MT5Broker
+    broker=object.__new__(MT5Broker)
+    broker._mt5=FakeMT5API()
+    broker._mt5._send=SimpleNamespace(retcode=10010,order=10,deal=11)
+    request={'action':1}
+    result=broker.submit(request)
+    assert result['status']=='PARTIAL_FILL_UNSUPPORTED'
+    assert result['retcode']==10010
 
 
 def test_mt5_adapter_rejection_never_sends_and_unknown_state_is_not_success():
@@ -310,3 +342,146 @@ def test_account_server_is_part_of_live_identity(tmp_path):
     with pytest.raises(ValueError, match='different broker server'):
         LiveSession(session.cfg,broker)
     assert len(list((tmp_path/'live_state').glob('111_*_EURUSD.json')))==1
+
+
+def test_unexpected_partial_fill_locks_live_session_for_manual_reconciliation(tmp_path):
+    broker=FakeBroker()
+    session=setup_session(tmp_path,broker,'BUY')
+    state={'request_id':'QRL123','result':{'status':'PARTIAL_FILL_UNSUPPORTED'}}
+    with pytest.raises(RuntimeError,match='manual reconciliation'):
+        session._reconcile_pending(state,broker.account())
+
+
+def test_live_order_deviation_cannot_exceed_risk_slippage_bound():
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError, match='order_deviation_points'):
+        QuantRLConfig.model_validate({
+            'live': {'order_deviation_points': 21},
+            'execution': {'max_slippage_points': 20},
+        })
+
+
+def test_live_stressed_loss_includes_adverse_entry_and_stop_slippage(tmp_path):
+    broker=FakeBroker()
+    session=setup_session(tmp_path,broker,'BUY')
+    observed=[]
+    original=broker._mt5.order_calc_profit
+    def capture(side,symbol,volume,entry,sl):
+        observed.append((float(entry),float(sl)))
+        return original(side,symbol,volume,entry,sl)
+    broker._mt5.order_calc_profit=capture
+    result=session.step()
+    assert result['status']=='FILLED'
+    assert len(observed)==2
+    slippage=session.cfg.execution.max_slippage_points*broker.spec.point
+    assert observed[1][0]==pytest.approx(observed[0][0]+slippage)
+    assert observed[1][1]==pytest.approx(observed[0][1]-slippage)
+
+
+def test_live_rejects_invalid_broker_free_margin(tmp_path):
+    broker=FakeBroker()
+    session=setup_session(tmp_path,broker,'BUY')
+    original=broker.account
+    def invalid_margin_account():
+        account=original()
+        account.margin_free=float('nan')
+        return account
+    broker.account=invalid_margin_account
+    result=session.step()
+    assert result['status']=='VETOED_BROKER_CALC'
+    assert broker.calls==0
+
+def _pending_recovery_fixture(tmp_path):
+    broker=FakeBroker()
+    session=setup_session(tmp_path,broker,'BUY')
+    broker._mt5.DEAL_ENTRY_IN=0
+    broker._mt5.DEAL_TYPE_BUY=0
+    broker._mt5.DEAL_TYPE_SELL=1
+    broker._mt5.POSITION_TYPE_BUY=0
+    broker._mt5.POSITION_TYPE_SELL=1
+    state={'status':'PENDING','request_id':'QRL123','submit_time_s':int(time.time()),
+        'last_bar_time_s':int(time.time()),'requested_volume_lots':0.1,
+        'requested_direction':'BUY','requested_sl_price':1.09,
+        'requested_tp_price':1.12,'broker_point':0.00001,
+        'broker_tick_size':0.00001}
+    return broker,session,state
+
+
+
+def test_live_does_not_mark_entry_filled_without_broker_confirmed_sl_tp(tmp_path):
+    broker=FakeBroker()
+    broker.position_protection_override=(0.0,0.0)
+    session=setup_session(tmp_path,broker,'BUY')
+    with pytest.raises(RuntimeError,match='SL/TP protection is missing'):
+        session.step()
+    import json
+    state=json.loads((tmp_path/'live_state'/'111_EURUSD.json').read_text())
+    assert state['status']=='PENDING'
+    assert state['result']['status']=='FILLED'
+    assert broker.calls==1
+
+
+def test_live_rejects_broker_modified_sl_tp(tmp_path):
+    broker=FakeBroker()
+    broker.position_protection_override=(1.0,2.0)
+    session=setup_session(tmp_path,broker,'BUY')
+    with pytest.raises(RuntimeError,match='SL/TP protection is missing'):
+        session.step()
+    assert broker.calls==1
+
+
+def test_pending_recovery_requires_confirmed_sl_tp(tmp_path):
+    broker,session,state=_pending_recovery_fixture(tmp_path)
+    state.update(requested_sl_price=1.09,requested_tp_price=1.12,
+        broker_point=0.00001,broker_tick_size=0.00001)
+    broker._positions=[SimpleNamespace(magic=session.cfg.live.magic,
+        symbol='EURUSD',comment='QRL123',type=0,volume=0.1,
+        sl=0.0,tp=0.0,ticket=900)]
+    broker.recent_deals=lambda since:[SimpleNamespace(
+        magic=session.cfg.live.magic,symbol='EURUSD',comment='QRL123',
+        entry=0,type=0,volume=0.1,ticket=503)]
+    with pytest.raises(RuntimeError,match='SL/TP protection is missing'):
+        session._reconcile_pending(state,broker.account())
+
+
+def test_pending_recovery_rejects_partial_deal_volume(tmp_path):
+    broker,session,state=_pending_recovery_fixture(tmp_path)
+    broker.recent_deals=lambda since:[SimpleNamespace(
+        magic=session.cfg.live.magic,symbol='EURUSD',comment='QRL123',
+        entry=0,type=0,volume=0.04,ticket=501)]
+    with pytest.raises(RuntimeError,match='not an exact full fill'):
+        session._reconcile_pending(state,broker.account())
+
+
+def test_pending_recovery_rejects_wrong_deal_direction(tmp_path):
+    broker,session,state=_pending_recovery_fixture(tmp_path)
+    broker.recent_deals=lambda since:[SimpleNamespace(
+        magic=session.cfg.live.magic,symbol='EURUSD',comment='QRL123',
+        entry=0,type=1,volume=0.1,ticket=502)]
+    with pytest.raises(RuntimeError,match='direction is inconsistent'):
+        session._reconcile_pending(state,broker.account())
+
+
+def test_pending_recovery_accepts_only_exact_full_volume_deal(tmp_path):
+    broker,session,state=_pending_recovery_fixture(tmp_path)
+    broker._positions=[SimpleNamespace(magic=session.cfg.live.magic,
+        symbol='EURUSD',comment='QRL123',type=0,volume=0.1,
+        sl=1.09,tp=1.12,ticket=903)]
+    broker.recent_deals=lambda since:[SimpleNamespace(
+        magic=session.cfg.live.magic,symbol='EURUSD',comment='QRL123',
+        entry=0,type=0,volume=0.1,ticket=503)]
+    result=session._reconcile_pending(state,broker.account())
+    assert result['status']=='RECOVERED_FILLED'
+    assert state['status']=='FILLED'
+    assert state['recovered_executed_volume_lots']==pytest.approx(0.1)
+    assert state['recovered_deal_ids']==[503]
+
+
+def test_pending_recovery_rejects_partial_open_position(tmp_path):
+    broker,session,state=_pending_recovery_fixture(tmp_path)
+    broker._positions=[SimpleNamespace(
+        magic=session.cfg.live.magic,symbol='EURUSD',comment='QRL123',
+        type=0,volume=0.04)]
+    with pytest.raises(RuntimeError,match='identity, direction, or volume is inconsistent'):
+        session._reconcile_pending(state,broker.account())
+

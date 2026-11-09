@@ -217,6 +217,7 @@ class PortfolioAccountingSimulator:
         inactivity_penalty_lots: float = 0.01,
         market_context_cache: CausalMarketContextCache | None = None,
         deadline_monotonic: float | None = None,
+        m1_ordered: bool | None = None,
     ) -> PortfolioSimulationResult:
         dynamic_policy = callable(proposals)
         proposal_by_bar: dict[int, ActionProposal] = {}
@@ -244,6 +245,21 @@ class PortfolioAccountingSimulator:
             raise ValueError("Historical quote side must be MID or BID")
         if market_context_cache is not None and not market_context_cache.compatible(observations, self.cfg):
             raise ValueError("Market context cache belongs to a different dataset or safety configuration")
+        # Validate M1 ordering once per replay. Rechecking np.diff over the
+        # complete multi-year minute array for every dual-touch bar is O(N)
+        # per event and can dominate the replay runtime.
+        m1_arrays_valid = (
+            m1_time_s is not None and m1_high is not None and m1_low is not None
+            and len(m1_time_s) > 0
+            and len(m1_time_s) == len(m1_high) == len(m1_low)
+            and (m1_spread_points is None or len(m1_spread_points) == len(m1_time_s))
+        )
+        if m1_ordered is None:
+            # Direct simulator callers retain defensive validation. The normal
+            # research path supplies the result already certified by MT5History.freeze().
+            m1_ordered = m1_arrays_valid and bool(np.all(np.diff(m1_time_s) > 0))
+        else:
+            m1_ordered = bool(m1_ordered) and m1_arrays_valid
         sorted_bars = range(first_bar, last_bar + 1)
         # Convert the full source array once; accessing spread_pips repeatedly
         # constructs a fresh array and scales poorly with long historical windows.
@@ -376,6 +392,7 @@ class PortfolioAccountingSimulator:
                         m1_spread_points=m1_spread_points,
                         point=symbol_spec.point,
                         cost_multiplier=cost_multiplier,
+                        m1_ordered=m1_ordered,
                     )
                     exit_reason = resolved
                     exit_price = target_price if resolved == "TP" else stop_price
@@ -723,6 +740,7 @@ class PortfolioAccountingSimulator:
         m1_spread_points: np.ndarray | None = None,
         point: float = 0.00001,
         cost_multiplier: float = 1.0,
+        m1_ordered: bool | None = None,
     ) -> str:
         """Resolve same-bar TP & SL touch using M1 sub-bars if available; otherwise conservative AMBIGUOUS_SL."""
         if m1_spread_points is not None and (m1_time_s is None or
@@ -731,7 +749,7 @@ class PortfolioAccountingSimulator:
         if (m1_time_s is not None and m1_high is not None and m1_low is not None
                 and len(m1_time_s) == len(m1_high) == len(m1_low)
                 and len(m1_time_s) > 0
-                and np.all(np.diff(m1_time_s) > 0)
+                and (m1_ordered if m1_ordered is not None else np.all(np.diff(m1_time_s) > 0))
                 and bar_end_s > bar_start_s):
             i0 = int(np.searchsorted(m1_time_s, bar_start_s, side="left"))
             i1 = int(np.searchsorted(m1_time_s, bar_end_s, side="left"))
