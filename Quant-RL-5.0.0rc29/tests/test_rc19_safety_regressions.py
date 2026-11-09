@@ -110,9 +110,14 @@ def test_pending_deal_recovery_requires_exact_broker_identity(tmp_path):
     session=setup_session(tmp_path,broker,'BUY')
     state=session._load_state(broker.account())
     marker='QRL1700000000'
-    state.update(status='PENDING',request_id=marker,submit_time_s=int(time.time()),last_bar_time_s=1700000000)
+    state.update(status='PENDING',request_id=marker,submit_time_s=int(time.time()),last_bar_time_s=1700000000,
+        requested_volume_lots=0.1,requested_direction='BUY')
+    broker._mt5.DEAL_ENTRY_IN=0
+    broker._mt5.DEAL_TYPE_BUY=0
+    broker._mt5.DEAL_TYPE_SELL=1
     store_json(session._journal(broker.account_id),state)
-    broker.recent_deals=lambda since:[NS(magic=session.cfg.live.magic,symbol='EURUSD',comment=marker,ticket=73)]
+    broker.recent_deals=lambda since:[NS(magic=session.cfg.live.magic,symbol='EURUSD',comment=marker,
+        entry=0,type=0,volume=0.1,ticket=73)]
     assert session.step()['status']=='RECOVERED_FILLED'
     assert broker.calls==0
     stored=json.loads(session._journal(broker.account_id).read_text())
@@ -124,7 +129,8 @@ def test_pending_mismatched_deal_stays_unresolved(tmp_path):
     broker=FakeBroker()
     session=setup_session(tmp_path,broker,'BUY')
     state=session._load_state(broker.account())
-    state.update(status='PENDING',request_id='QRL1700000000',submit_time_s=int(time.time()),last_bar_time_s=1700000000)
+    state.update(status='PENDING',request_id='QRL1700000000',submit_time_s=int(time.time()),last_bar_time_s=1700000000,
+        requested_volume_lots=0.1,requested_direction='BUY')
     store_json(session._journal(broker.account_id),state)
     broker.recent_deals=lambda since:[NS(magic=session.cfg.live.magic,symbol='EURUSD',comment='QRL_WRONG',ticket=73)]
     with pytest.raises(RuntimeError,match='unresolved'):
