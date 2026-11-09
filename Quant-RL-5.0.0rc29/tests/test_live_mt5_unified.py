@@ -310,3 +310,29 @@ def test_account_server_is_part_of_live_identity(tmp_path):
     with pytest.raises(ValueError, match='different broker server'):
         LiveSession(session.cfg,broker)
     assert len(list((tmp_path/'live_state').glob('111_*_EURUSD.json')))==1
+
+
+def test_live_order_deviation_cannot_exceed_risk_slippage_bound():
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError, match='order_deviation_points'):
+        QuantRLConfig.model_validate({
+            'live': {'order_deviation_points': 21},
+            'execution': {'max_slippage_points': 20},
+        })
+
+
+def test_live_stressed_loss_includes_adverse_entry_and_stop_slippage(tmp_path):
+    broker=FakeBroker()
+    session=setup_session(tmp_path,broker,'BUY')
+    observed=[]
+    original=broker._mt5.order_calc_profit
+    def capture(side,symbol,volume,entry,sl):
+        observed.append((float(entry),float(sl)))
+        return original(side,symbol,volume,entry,sl)
+    broker._mt5.order_calc_profit=capture
+    result=session.step()
+    assert result['status']=='FILLED'
+    assert len(observed)==2
+    slippage=session.cfg.execution.max_slippage_points*broker.spec.point
+    assert observed[1][0]==pytest.approx(observed[0][0]+slippage)
+    assert observed[1][1]==pytest.approx(observed[0][1]-slippage)
