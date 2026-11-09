@@ -380,3 +380,56 @@ def test_live_rejects_invalid_broker_free_margin(tmp_path):
     result=session.step()
     assert result['status']=='VETOED_BROKER_CALC'
     assert broker.calls==0
+
+def _pending_recovery_fixture(tmp_path):
+    broker=FakeBroker()
+    session=setup_session(tmp_path,broker,'BUY')
+    broker._mt5.DEAL_ENTRY_IN=0
+    broker._mt5.DEAL_TYPE_BUY=0
+    broker._mt5.DEAL_TYPE_SELL=1
+    broker._mt5.POSITION_TYPE_BUY=0
+    broker._mt5.POSITION_TYPE_SELL=1
+    state={'status':'PENDING','request_id':'QRL123','submit_time_s':int(time.time()),
+        'last_bar_time_s':int(time.time()),'requested_volume_lots':0.1,
+        'requested_direction':'BUY'}
+    return broker,session,state
+
+
+def test_pending_recovery_rejects_partial_deal_volume(tmp_path):
+    broker,session,state=_pending_recovery_fixture(tmp_path)
+    broker.recent_deals=lambda since:[SimpleNamespace(
+        magic=session.cfg.live.magic,symbol='EURUSD',comment='QRL123',
+        entry=0,type=0,volume=0.04,ticket=501)]
+    with pytest.raises(RuntimeError,match='not an exact full fill'):
+        session._reconcile_pending(state,broker.account())
+
+
+def test_pending_recovery_rejects_wrong_deal_direction(tmp_path):
+    broker,session,state=_pending_recovery_fixture(tmp_path)
+    broker.recent_deals=lambda since:[SimpleNamespace(
+        magic=session.cfg.live.magic,symbol='EURUSD',comment='QRL123',
+        entry=0,type=1,volume=0.1,ticket=502)]
+    with pytest.raises(RuntimeError,match='direction is inconsistent'):
+        session._reconcile_pending(state,broker.account())
+
+
+def test_pending_recovery_accepts_only_exact_full_volume_deal(tmp_path):
+    broker,session,state=_pending_recovery_fixture(tmp_path)
+    broker.recent_deals=lambda since:[SimpleNamespace(
+        magic=session.cfg.live.magic,symbol='EURUSD',comment='QRL123',
+        entry=0,type=0,volume=0.1,ticket=503)]
+    result=session._reconcile_pending(state,broker.account())
+    assert result['status']=='RECOVERED_FILLED'
+    assert state['status']=='FILLED'
+    assert state['recovered_executed_volume_lots']==pytest.approx(0.1)
+    assert state['recovered_deal_ids']==[503]
+
+
+def test_pending_recovery_rejects_partial_open_position(tmp_path):
+    broker,session,state=_pending_recovery_fixture(tmp_path)
+    broker._positions=[SimpleNamespace(
+        magic=session.cfg.live.magic,symbol='EURUSD',comment='QRL123',
+        type=0,volume=0.04)]
+    with pytest.raises(RuntimeError,match='position volume is not an exact full fill'):
+        session._reconcile_pending(state,broker.account())
+
