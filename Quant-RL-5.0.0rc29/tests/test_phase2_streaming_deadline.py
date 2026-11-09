@@ -178,7 +178,7 @@ def test_ppo_fit_passes_deadline_to_training_and_validation_replays(monkeypatch)
     monkeypatch.setattr(PPOTrader, "restore", lambda self, snapshot: None)
 
     trader = object.__new__(PPOTrader)
-    trader.settings = SimpleNamespace(episodes=1, validation_interval_episodes=1)
+    trader.settings = SimpleNamespace(episodes=1, validation_interval_episodes=1, ppo_epochs=1)
     deadline = time.monotonic() + 60
 
     trader.fit(
