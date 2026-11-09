@@ -1,0 +1,32 @@
+# Quant-RL 5.0.0rc29 — MT5-only, single-position, IDE startup.
+# Uses the MetaQuotes demo account already signed into the MT5 terminal.
+# Other limits have validated defaults in quant_rl/config/schema.py.
+live:
+  symbol: EURUSD
+  economic_blackout_active: false
+  allow_non_demo_account: false  # explicit opt-in required before any funded-account LIVE use
+research:
+  symbols: [EURUSD, GBPUSD, USDJPY, USDCHF, USDCAD, AUDUSD, NZDUSD]
+  lookback_years: 4
+  timeframe: H4
+ppo:
+  episodes: 1000
+  ppo_epochs: 1000
+  penalty_reference_lots: 0.01
+optimization:
+  trials: 1000
+  tournament_top_k: 9
+  max_session_seconds: 7200
+qualification:
+  cost_stress_multiplier: 1.5
+execution:
+  max_open_positions: 1
+  # Backtest-only cash cost assumptions; LIVE uses MT5 actual deal history.
+  commission_per_lot_round_trip: 7.0
+  financing_long_cash_per_lot_rollover: -4.5
+  financing_short_cash_per_lot_rollover: -4.5
+  friday_cutoff_server_hour: 23  # stop new FX entries at 23:00 MT5 server time
+  sunday_open_server_hour: 21   # allow entries again only after 21:00, with fresh quotes
+broker_connection:
+  mt5_login: 0  # use already signed-in MT5 account
+  mt5_server_timezone: null  # set a verified IANA zone (e.g. Europe/Athens) before LIVE; null blocks LIVE

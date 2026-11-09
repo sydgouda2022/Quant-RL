@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "quant-rl"
+version = "5.0.0rc29"
+description = "Economic hybrid PPO + Optuna research and automatic MT5-only LIVE/RESEARCH router"
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+    "numpy>=1.26.4,<3",
+    "pandas>=2.2,<3",
+    "torch>=2.2,<3",
+    "pydantic>=2.7,<3",
+    "PyYAML>=6.0,<7",
+    "tzdata>=2024.1",
+    "optuna>=4.0,<5",
+    "reportlab>=4.0,<5",
+    "MetaTrader5>=5.0.45,<6; sys_platform == \"win32\"",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0,<10"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.setuptools.packages.find]
+include = ["quant_rl*"]
+exclude = ["tests*"]
