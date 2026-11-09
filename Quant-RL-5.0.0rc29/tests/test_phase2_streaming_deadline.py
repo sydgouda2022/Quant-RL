@@ -98,11 +98,9 @@ def test_iter_m1_range_checks_deadline_after_blocking_mt5_request(monkeypatch):
         def last_error(self):
             return (0, "ok")
 
-    source = __import__(
-        "quant_rl.data.mt5_source", fromlist=["MT5DataSource"]
-    ).MT5DataSource.__new__(
-        __import__("quant_rl.data.mt5_source", fromlist=["MT5DataSource"]).MT5DataSource
-    )
+    from quant_rl.data.mt5_source import MT5DataSource
+
+    source = MT5DataSource.__new__(MT5DataSource)
     source._mt5 = FakeMT5()
 
     # Before the blocking request the deadline is valid; immediately after it expires.
