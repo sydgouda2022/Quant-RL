@@ -102,6 +102,9 @@ class LiveSession:
         authenticated broker order/position/deal with our exact request marker,
         configured magic and symbol can close the pending journal entry.
         """
+        prior_result=state.get('result') or {}
+        if prior_result.get('status')=='PARTIAL_FILL_UNSUPPORTED':
+            raise RuntimeError('Broker reported an unsupported partial fill despite FOK; manual reconciliation required')
         marker=str(state.get('request_id') or '')
         if not marker or not marker.startswith('QRL'):
             raise RuntimeError('Pending MT5 request has no valid marker; operator reconciliation required')
