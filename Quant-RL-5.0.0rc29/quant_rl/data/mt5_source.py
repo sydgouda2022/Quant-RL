@@ -318,6 +318,10 @@ class MT5DataSource:
                 datetime.fromtimestamp(window_start, UTC),
                 datetime.fromtimestamp(window_end - 1, UTC),
             )
+            # MT5 calls are blocking; enforce the deadline as soon as control returns,
+            # before inspecting or iterating a potentially large response.
+            if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
+                raise TimeoutError(f'M1 acquisition exceeded the research session deadline for {symbol}')
             if rates is None:
                 raise ConnectionError(
                     f"MT5 M1 acquisition failed for {symbol} interval "
