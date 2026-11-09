@@ -47,3 +47,116 @@ def test_freeze_checks_session_deadline_while_consuming_stream():
             'EURUSD', 'H1', bars, default_symbol_spec('EURUSD'), m1_bars=stream(),
             deadline_monotonic=time.monotonic() - 1,
         )
+
+
+
+def test_freeze_rechecks_deadline_every_4096_rows(monkeypatch):
+    import quant_rl.data.mt5_history as history_module
+
+    bars = [OHLCVBar(1704067200 + 3600 * i, 1.1, 1.1002, 1.0998, 1.1, 100, 2.0)]
+    yielded = []
+
+    def stream():
+        for i in range(10_000):
+            yielded.append(i)
+            ts = 1704067200 + i * 60
+            yield OHLCVBar(ts, 1.1, 1.1002, 1.0998, 1.1, 10, 1.5)
+
+    # First check (row 0) is in time; the second check (row 4096) is late.
+    clock = iter((0.0, 2.0))
+    monkeypatch.setattr(history_module.time, "monotonic", lambda: next(clock))
+
+    with pytest.raises(TimeoutError, match="deadline"):
+        MT5History().freeze(
+            "EURUSD", "H1", bars, default_symbol_spec("EURUSD"),
+            m1_bars=stream(), deadline_monotonic=1.0,
+        )
+    assert len(yielded) == 4097
+
+
+def test_iter_m1_range_checks_deadline_after_blocking_mt5_request(monkeypatch):
+    import quant_rl.data.mt5_source as source_module
+
+    class Rates:
+        iterated = False
+
+        def __iter__(self):
+            self.iterated = True
+            return iter(())
+
+    rates = Rates()
+
+    class FakeMT5:
+        TIMEFRAME_M1 = 1
+
+        def symbol_select(self, symbol, enabled):
+            return True
+
+        def copy_rates_range(self, *args):
+            return rates
+
+        def last_error(self):
+            return (0, "ok")
+
+    source = __import__(
+        "quant_rl.data.mt5_source", fromlist=["MT5DataSource"]
+    ).MT5DataSource.__new__(
+        __import__("quant_rl.data.mt5_source", fromlist=["MT5DataSource"]).MT5DataSource
+    )
+    source._mt5 = FakeMT5()
+
+    # Before the blocking request the deadline is valid; immediately after it expires.
+    clock = iter((0.0, 2.0))
+    monkeypatch.setattr(source_module.time, "monotonic", lambda: next(clock))
+
+    stream = source.iter_m1_range(
+        "EURUSD", 1704067200, 1704067260, deadline_monotonic=1.0
+    )
+    with pytest.raises(TimeoutError, match="deadline"):
+        next(stream)
+    assert rates.iterated is False
+
+
+def test_fetch_preserves_timeout_error_and_closes_mt5(monkeypatch):
+    from types import SimpleNamespace
+    import quant_rl.data.mt5_history as history_module
+
+    closed = []
+
+    class FakeMT5:
+        def account_info(self):
+            return SimpleNamespace(currency="USD", server="Demo")
+
+        def symbol_info(self, symbol):
+            return None
+
+        def symbol_info_tick(self, symbol):
+            return None
+
+    class FakeSource:
+        def __init__(self, **kwargs):
+            self._mt5 = FakeMT5()
+
+        def connect(self):
+            pass
+
+        def get_symbol_spec(self, symbol, currency):
+            return default_symbol_spec(symbol)
+
+        def fetch_bars_since(self, symbol, timeframe, start):
+            raise TimeoutError("synthetic session deadline")
+
+        def close(self):
+            closed.append(True)
+
+    config = SimpleNamespace(
+        broker_connection=SimpleNamespace(
+            mt5_login=0, mt5_password="", mt5_server="", mt5_path=""
+        ),
+        research=SimpleNamespace(lookback_years=2),
+    )
+    monkeypatch.setattr(history_module, "MT5DataSource", FakeSource)
+
+    with pytest.raises(TimeoutError, match="synthetic session deadline"):
+        MT5History(config).fetch("EURUSD", deadline_monotonic=time.monotonic() + 60)
+    assert closed == [True]
