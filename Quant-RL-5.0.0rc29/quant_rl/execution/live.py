@@ -377,9 +377,12 @@ class LiveSession:
         side=m.ORDER_TYPE_BUY if direction=='BUY' else m.ORDER_TYPE_SELL
         estimated_loss=m.order_calc_profit(side,self.symbol,volume,price,sl)
         slippage_price=self.cfg.execution.max_slippage_points*spec.point
+        # Stress both adverse entry movement and stop execution beyond its trigger.
+        # Config validation ensures broker deviation cannot exceed this bound.
+        worst_entry=price+slippage_price if direction=='BUY' else price-slippage_price
         worst_sl=sl-slippage_price if direction=='BUY' else sl+slippage_price
-        stressed_loss=m.order_calc_profit(side,self.symbol,volume,price,worst_sl)
-        margin=m.order_calc_margin(side,self.symbol,volume,price)
+        stressed_loss=m.order_calc_profit(side,self.symbol,volume,worst_entry,worst_sl)
+        margin=m.order_calc_margin(side,self.symbol,volume,worst_entry)
         estimated_commission=volume*self.cfg.execution.commission_per_lot_round_trip
         if (margin is None or estimated_loss is None or stressed_loss is None
                 or not all(math.isfinite(float(v)) for v in (margin,estimated_loss,stressed_loss))
