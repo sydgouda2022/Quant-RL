@@ -401,7 +401,9 @@ def _pending_recovery_fixture(tmp_path):
     broker._mt5.POSITION_TYPE_SELL=1
     state={'status':'PENDING','request_id':'QRL123','submit_time_s':int(time.time()),
         'last_bar_time_s':int(time.time()),'requested_volume_lots':0.1,
-        'requested_direction':'BUY'}
+        'requested_direction':'BUY','requested_sl_price':1.09,
+        'requested_tp_price':1.12,'broker_point':0.00001,
+        'broker_tick_size':0.00001}
     return broker,session,state
 
 
@@ -462,6 +464,9 @@ def test_pending_recovery_rejects_wrong_deal_direction(tmp_path):
 
 def test_pending_recovery_accepts_only_exact_full_volume_deal(tmp_path):
     broker,session,state=_pending_recovery_fixture(tmp_path)
+    broker._positions=[SimpleNamespace(magic=session.cfg.live.magic,
+        symbol='EURUSD',comment='QRL123',type=0,volume=0.1,
+        sl=1.09,tp=1.12,ticket=903)]
     broker.recent_deals=lambda since:[SimpleNamespace(
         magic=session.cfg.live.magic,symbol='EURUSD',comment='QRL123',
         entry=0,type=0,volume=0.1,ticket=503)]
@@ -477,6 +482,6 @@ def test_pending_recovery_rejects_partial_open_position(tmp_path):
     broker._positions=[SimpleNamespace(
         magic=session.cfg.live.magic,symbol='EURUSD',comment='QRL123',
         type=0,volume=0.04)]
-    with pytest.raises(RuntimeError,match='position volume is not an exact full fill'):
+    with pytest.raises(RuntimeError,match='identity, direction, or volume is inconsistent'):
         session._reconcile_pending(state,broker.account())
 
