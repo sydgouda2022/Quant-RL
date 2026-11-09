@@ -327,7 +327,9 @@ class MT5DataSource:
                     f"MT5 M1 acquisition failed for {symbol} interval "
                     f"{window_start}:{window_end}: {self._mt5.last_error()}"
                 )
-            for r in rates:
+            for row_index, r in enumerate(rates):
+                if row_index % 4_096 == 0 and deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
+                    raise TimeoutError(f'M1 acquisition exceeded the research session deadline for {symbol}')
                 raw_ts = int(r['time'])
                 if raw_ts < window_start or raw_ts >= window_end:
                     raise ValueError(f'MT5 returned out-of-window M1 candle for {symbol}: {raw_ts}')
