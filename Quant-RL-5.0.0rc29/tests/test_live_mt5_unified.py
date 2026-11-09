@@ -34,6 +34,8 @@ def stable_market_clock(monkeypatch):
 class FakeTerminal:
     ORDER_TYPE_BUY=0
     ORDER_TYPE_SELL=1
+    POSITION_TYPE_BUY=0
+    POSITION_TYPE_SELL=1
     def order_calc_profit(self,side,symbol,volume,entry,sl):
         return (sl-entry)*(1 if side==0 else -1)*100000*volume
     def order_calc_margin(self,side,symbol,volume,price):
@@ -49,6 +51,7 @@ class FakeBroker:
         self._orders=[]
         self.calls=0
         self.fail_uncertain=False
+        self.position_protection_override=None
         self.tick_time=int(time.time())
     def account(self):
         return SimpleNamespace(login=self.account_id,equity=10000.0,balance=10000.0,
@@ -71,6 +74,13 @@ class FakeBroker:
         self.calls+=1
         if self.fail_uncertain:
             raise ConnectionError('unknown order outcome')
+        position=SimpleNamespace(magic=request['magic'],symbol=request['symbol'],
+            comment=request['comment'],type=(0 if request['direction']=='BUY' else 1),
+            volume=float(request['volume']),sl=float(request['sl']),tp=float(request['tp']),
+            ticket=123)
+        if self.position_protection_override:
+            position.sl,position.tp=self.position_protection_override
+        self._positions=[position]
         return {'status':'FILLED','retcode':10009,'order':121,'deal':122}
 
 
@@ -393,6 +403,43 @@ def _pending_recovery_fixture(tmp_path):
         'last_bar_time_s':int(time.time()),'requested_volume_lots':0.1,
         'requested_direction':'BUY'}
     return broker,session,state
+
+
+
+def test_live_does_not_mark_entry_filled_without_broker_confirmed_sl_tp(tmp_path):
+    broker=FakeBroker()
+    broker.position_protection_override=(0.0,0.0)
+    session=setup_session(tmp_path,broker,'BUY')
+    with pytest.raises(RuntimeError,match='SL/TP protection is missing'):
+        session.step()
+    import json
+    state=json.loads((tmp_path/'live_state'/'111_EURUSD.json').read_text())
+    assert state['status']=='PENDING'
+    assert state['result']['status']=='FILLED'
+    assert broker.calls==1
+
+
+def test_live_rejects_broker_modified_sl_tp(tmp_path):
+    broker=FakeBroker()
+    broker.position_protection_override=(1.0,2.0)
+    session=setup_session(tmp_path,broker,'BUY')
+    with pytest.raises(RuntimeError,match='SL/TP protection is missing'):
+        session.step()
+    assert broker.calls==1
+
+
+def test_pending_recovery_requires_confirmed_sl_tp(tmp_path):
+    broker,session,state=_pending_recovery_fixture(tmp_path)
+    state.update(requested_sl_price=1.09,requested_tp_price=1.12,
+        broker_point=0.00001,broker_tick_size=0.00001)
+    broker._positions=[SimpleNamespace(magic=session.cfg.live.magic,
+        symbol='EURUSD',comment='QRL123',type=0,volume=0.1,
+        sl=0.0,tp=0.0,ticket=900)]
+    broker.recent_deals=lambda since:[SimpleNamespace(
+        magic=session.cfg.live.magic,symbol='EURUSD',comment='QRL123',
+        entry=0,type=0,volume=0.1,ticket=503)]
+    with pytest.raises(RuntimeError,match='SL/TP protection is missing'):
+        session._reconcile_pending(state,broker.account())
 
 
 def test_pending_recovery_rejects_partial_deal_volume(tmp_path):
