@@ -160,3 +160,31 @@ def test_fetch_preserves_timeout_error_and_closes_mt5(monkeypatch):
     with pytest.raises(TimeoutError, match="synthetic session deadline"):
         MT5History(config).fetch("EURUSD", deadline_monotonic=time.monotonic() + 60)
     assert closed == [True]
+
+
+
+def test_ppo_fit_passes_deadline_to_training_and_validation_replays(monkeypatch):
+    from types import SimpleNamespace
+    from quant_rl.intelligence.policy import PPOTrader
+
+    calls = []
+    simulation = SimpleNamespace(decision_events=(), learning_reward_account_ccy=1.0)
+
+    def replay(self, *args, **kwargs):
+        calls.append(kwargs.get("deadline_monotonic"))
+        return simulation, []
+
+    monkeypatch.setattr(PPOTrader, "replay", replay)
+    monkeypatch.setattr(PPOTrader, "snapshot", lambda self: {})
+    monkeypatch.setattr(PPOTrader, "restore", lambda self, snapshot: None)
+
+    trader = object.__new__(PPOTrader)
+    trader.settings = SimpleNamespace(episodes=1, validation_interval_episodes=1)
+    deadline = time.monotonic() + 60
+
+    trader.fit(
+        obs=None, spec=None, train=np.array([0]), val=np.array([0]),
+        cfg=None, seed=7, deadline_monotonic=deadline,
+    )
+
+    assert calls == [deadline, deadline]
