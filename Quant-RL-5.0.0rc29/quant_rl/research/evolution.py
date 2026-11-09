@@ -292,7 +292,8 @@ def run_research_session(config: QuantRLConfig, *, targets=None, preloaded=None,
                 attempt=int(prior_cycle.get('attempt',0))+1
                 # Market-closed research explores NEW Optuna trials even if candles are
                 # unchanged; never skip an identical history automatically.
-                m1=(frozen.m1_time_s,frozen.m1_high,frozen.m1_low,frozen.m1_spread_points)
+                m1=(frozen.m1_time_s,frozen.m1_high,frozen.m1_low,
+                    frozen.m1_spread_points,frozen.m1_ordered)
                 own_record=population.data['symbols'].get(symbol)
                 if own_record and (own_record.get('mt5_server_timezone') != config.broker_connection.mt5_server_timezone
                     or own_record.get('broker_server') != frozen.broker_server
