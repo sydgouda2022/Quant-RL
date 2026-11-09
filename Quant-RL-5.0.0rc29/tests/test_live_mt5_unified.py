@@ -336,3 +336,17 @@ def test_live_stressed_loss_includes_adverse_entry_and_stop_slippage(tmp_path):
     slippage=session.cfg.execution.max_slippage_points*broker.spec.point
     assert observed[1][0]==pytest.approx(observed[0][0]+slippage)
     assert observed[1][1]==pytest.approx(observed[0][1]-slippage)
+
+
+def test_live_rejects_invalid_broker_free_margin(tmp_path):
+    broker=FakeBroker()
+    session=setup_session(tmp_path,broker,'BUY')
+    original=broker.account
+    def invalid_margin_account():
+        account=original()
+        account.margin_free=float('nan')
+        return account
+    broker.account=invalid_margin_account
+    result=session.step()
+    assert result['status']=='VETOED_BROKER_CALC'
+    assert broker.calls==0
