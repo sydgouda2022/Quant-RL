@@ -247,6 +247,7 @@ class FakeMT5API:
     ORDER_TIME_GTC=0
     SYMBOL_TRADE_EXECUTION_MARKET=2
     TRADE_RETCODE_DONE=10009
+    TRADE_RETCODE_DONE_PARTIAL=10010
     def __init__(self):
         self.checked=0;self.sent=0
         self._check=SimpleNamespace(retcode=0)
@@ -280,6 +281,17 @@ def test_mt5_adapter_rejects_symbols_without_fok_partial_fills_disabled():
     with pytest.raises(ValueError,match='does not support FOK'):
         broker.order_request(symbol='EURUSD',direction='BUY',volume=.1,
             price=1.1,sl=1.09,tp=1.12,deviation=10,magic=520052,comment='QRL123')
+
+
+def test_mt5_adapter_never_reports_partial_execution_as_filled():
+    from quant_rl.execution.mt5_broker import MT5Broker
+    broker=object.__new__(MT5Broker)
+    broker._mt5=FakeMT5API()
+    broker._mt5._send=SimpleNamespace(retcode=10010,order=10,deal=11)
+    request={'action':1}
+    result=broker.submit(request)
+    assert result['status']=='PARTIAL_FILL_UNSUPPORTED'
+    assert result['retcode']==10010
 
 
 def test_mt5_adapter_rejection_never_sends_and_unknown_state_is_not_success():
@@ -320,6 +332,14 @@ def test_account_server_is_part_of_live_identity(tmp_path):
     with pytest.raises(ValueError, match='different broker server'):
         LiveSession(session.cfg,broker)
     assert len(list((tmp_path/'live_state').glob('111_*_EURUSD.json')))==1
+
+
+def test_unexpected_partial_fill_locks_live_session_for_manual_reconciliation(tmp_path):
+    broker=FakeBroker()
+    session=setup_session(tmp_path,broker,'BUY')
+    state={'request_id':'QRL123','result':{'status':'PARTIAL_FILL_UNSUPPORTED'}}
+    with pytest.raises(RuntimeError,match='manual reconciliation'):
+        session._reconcile_pending(state,broker.account())
 
 
 def test_live_order_deviation_cannot_exceed_risk_slippage_bound():
