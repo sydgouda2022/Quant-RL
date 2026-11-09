@@ -117,14 +117,51 @@ class LiveSession:
         positions=self.broker.positions()
         orders=self.broker.orders()
         deals=self.broker.recent_deals(since)
-        confirmations=[d for d in deals if matches(d)]
-        if confirmations:
+        expected_volume=state.get('requested_volume_lots')
+        expected_direction=state.get('requested_direction')
+        if (expected_volume is None or expected_direction not in ('BUY','SELL')
+                or not math.isfinite(float(expected_volume)) or float(expected_volume)<=0):
+            raise RuntimeError('Pending MT5 request lacks its expected volume/direction; manual reconciliation required')
+
+        # A matching deal is execution evidence, not proof of a full FOK fill.
+        # Aggregate only entry deals for this exact request and verify both side
+        # and total executed volume before accepting recovery as FILLED.
+        matching_deals=[d for d in deals if matches(d)]
+        entry_in=getattr(self.broker._mt5,'DEAL_ENTRY_IN',None)
+        buy_type=getattr(self.broker._mt5,'DEAL_TYPE_BUY',None)
+        sell_type=getattr(self.broker._mt5,'DEAL_TYPE_SELL',None)
+        execution_deals=[d for d in matching_deals
+            if entry_in is not None and getattr(d,'entry',None)==entry_in]
+        if execution_deals:
+            expected_type=buy_type if expected_direction=='BUY' else sell_type
+            if expected_type is None or any(getattr(d,'type',None)!=expected_type
+                    for d in execution_deals):
+                raise RuntimeError('Recovered MT5 deal direction is inconsistent; manual reconciliation required')
+            executed_volume=sum(float(getattr(d,'volume',0) or 0) for d in execution_deals)
+            tolerance=max(1e-8,float(expected_volume)*1e-6)
+            if (not math.isfinite(executed_volume)
+                    or abs(executed_volume-float(expected_volume))>tolerance):
+                raise RuntimeError('Recovered MT5 deal volume is not an exact full fill; manual reconciliation required')
             state.update(status='FILLED',recovery='MT5_DEAL_HISTORY',
-                recovered_deal_ids=[int(getattr(d,'ticket',0) or 0) for d in confirmations])
+                recovered_deal_ids=[int(getattr(d,'ticket',0) or 0) for d in execution_deals],
+                recovered_executed_volume_lots=executed_volume)
             store_json(self._journal(account.login),state)
             return {'status':'RECOVERED_FILLED','decision_time_s':int(state['last_bar_time_s'])}
-        if any(matches(position) for position in positions):
-            state.update(status='FILLED',recovery='MT5_OPEN_POSITION')
+
+        matching_positions=[position for position in positions if matches(position)]
+        if matching_positions:
+            expected_position_type=getattr(self.broker._mt5,
+                'POSITION_TYPE_BUY' if expected_direction=='BUY' else 'POSITION_TYPE_SELL',None)
+            if (expected_position_type is None or len(matching_positions)!=1
+                    or getattr(matching_positions[0],'type',None)!=expected_position_type):
+                raise RuntimeError('Recovered MT5 position identity/direction is inconsistent; manual reconciliation required')
+            position_volume=float(getattr(matching_positions[0],'volume',0) or 0)
+            tolerance=max(1e-8,float(expected_volume)*1e-6)
+            if (not math.isfinite(position_volume)
+                    or abs(position_volume-float(expected_volume))>tolerance):
+                raise RuntimeError('Recovered MT5 position volume is not an exact full fill; manual reconciliation required')
+            state.update(status='FILLED',recovery='MT5_OPEN_POSITION',
+                recovered_executed_volume_lots=position_volume)
             store_json(self._journal(account.login),state)
             return {'status':'RECOVERED_OPEN_POSITION','decision_time_s':int(state['last_bar_time_s'])}
         if any(matches(order) for order in orders):
@@ -404,7 +441,8 @@ class LiveSession:
             magic=self.cfg.live.magic,comment=comment)
         # Persist the intent BEFORE calling order_send; a crash or timeout
         # never causes an automatic duplicate submission on restart.
-        state.update(status='PENDING',request_id=comment,submit_time_s=int(time.time()))
+        state.update(status='PENDING',request_id=comment,submit_time_s=int(time.time()),
+            requested_volume_lots=float(volume),requested_direction=direction)
         store_json(self._journal(a.login),state)
         if (kill_switch_engaged(Path(self.cfg.project_root)) or
                 operator_blackout_active(Path(self.cfg.project_root),
