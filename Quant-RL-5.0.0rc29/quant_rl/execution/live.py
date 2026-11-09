@@ -383,12 +383,14 @@ class LiveSession:
         worst_sl=sl-slippage_price if direction=='BUY' else sl+slippage_price
         stressed_loss=m.order_calc_profit(side,self.symbol,volume,worst_entry,worst_sl)
         margin=m.order_calc_margin(side,self.symbol,volume,worst_entry)
+        free_margin=float(getattr(a2,'margin_free',float('nan')))
         estimated_commission=volume*self.cfg.execution.commission_per_lot_round_trip
         if (margin is None or estimated_loss is None or stressed_loss is None
                 or not all(math.isfinite(float(v)) for v in (margin,estimated_loss,stressed_loss))
+                or not math.isfinite(free_margin) or free_margin < 0 or float(margin) <= 0
                 or estimated_loss>=0 or stressed_loss>=0
                 or -float(stressed_loss)+estimated_commission>float(a2.equity)*proposal.requested_risk_fraction+1e-6
-                or float(margin)>float(a2.margin_free)):
+                or float(margin)>free_margin):
             state['status']='VETOED_BROKER_CALC'
             store_json(self._journal(a.login),state)
             return {'status':'VETOED_BROKER_CALC','decision_time_s':bar_time}
