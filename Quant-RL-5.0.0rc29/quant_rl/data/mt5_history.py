@@ -47,6 +47,11 @@ class FrozenDataset:
     fallback_spread_points: float | None = None
     broker_server: str = ""
 
+    @property
+    def m1_ordered(self) -> bool:
+        """True when M1 timestamps were validated as strictly increasing during freeze()."""
+        return len(self.m1_time_s) > 0
+
 
 class MT5History:
     """Fresh MT5 retrieval; keep only current in-memory training data.
