@@ -75,3 +75,25 @@ def test_m1_covered_bar_count_is_not_minute_count(tmp_path):
     result=store.freeze('EURUSD','H1',h1,spec,m1_bars=m1)
     assert result.manifest.m1_intrabar_verified_bars == 1
     assert result.manifest.m1_window_coverage_fraction == 0.5
+
+
+
+def test_prevalidated_m1_ordering_skips_full_array_scan(monkeypatch):
+    # The simulator validates the complete M1 timestamp array once per replay,
+    # then passes this flag to every dual-touch resolver invocation.
+    times=np.array([T,T+60],dtype=np.int64)
+
+    def unexpected_diff(*args, **kwargs):
+        raise AssertionError("M1 timestamp ordering was rescanned in the hot path")
+
+    monkeypatch.setattr(np, "diff", unexpected_diff)
+    result=PortfolioAccountingSimulator._resolve_dual_touch_m1(
+        direction=TradeDirection.SELL, stop_price=1.1006, target_price=1.0996,
+        half_spread=0.00001, bar_price_side='BID',
+        bar_start_s=T, bar_end_s=T+120,
+        m1_time_s=times,
+        m1_high=np.array([1.1001,1.1006]),
+        m1_low=np.array([1.0995,1.1000]),
+        m1_ordered=True,
+    )
+    assert result == 'TP'
