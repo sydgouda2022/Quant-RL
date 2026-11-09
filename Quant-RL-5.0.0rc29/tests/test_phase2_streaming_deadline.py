@@ -53,7 +53,8 @@ def test_freeze_checks_session_deadline_while_consuming_stream():
 def test_freeze_rechecks_deadline_every_4096_rows(monkeypatch):
     import quant_rl.data.mt5_history as history_module
 
-    bars = [OHLCVBar(1704067200 + 3600 * i, 1.1, 1.1002, 1.0998, 1.1, 100, 2.0)]
+    bars = [OHLCVBar(1704067200 + 3600 * i, 1.1, 1.1002, 1.0998, 1.1, 100, 2.0)
+            for i in range(8)]
     yielded = []
 
     def stream():
@@ -181,7 +182,7 @@ def test_ppo_fit_passes_deadline_to_training_and_validation_replays(monkeypatch)
     deadline = time.monotonic() + 60
 
     trader.fit(
-        obs=None, spec=None, train=np.array([0]), val=np.array([0]),
+        obs=None, spec=SimpleNamespace(name="EURUSD"), train=np.array([0]), val=np.array([0]),
         cfg=None, seed=7, deadline_monotonic=deadline,
     )
 
