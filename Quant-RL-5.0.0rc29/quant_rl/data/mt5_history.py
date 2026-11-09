@@ -229,6 +229,10 @@ class MT5History:
             m1_lows.append(float(bar.low))
             m1_spreads.append(spread)
             previous_m1 = bar.time_s
+        # A final check catches deadlines crossed after the last periodic
+        # checkpoint, including streams shorter than the polling interval.
+        if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
+            raise TimeoutError(f'Research session deadline reached while freezing M1 evidence for {symbol}')
         m1_time_s = np.frombuffer(m1_times, dtype=np.int64).copy()
         m1_high = np.frombuffer(m1_highs, dtype=np.float64).copy()
         m1_low = np.frombuffer(m1_lows, dtype=np.float64).copy()
