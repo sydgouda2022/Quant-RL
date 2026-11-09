@@ -217,6 +217,7 @@ class PortfolioAccountingSimulator:
         inactivity_penalty_lots: float = 0.01,
         market_context_cache: CausalMarketContextCache | None = None,
         deadline_monotonic: float | None = None,
+        m1_ordered: bool | None = None,
     ) -> PortfolioSimulationResult:
         dynamic_policy = callable(proposals)
         proposal_by_bar: dict[int, ActionProposal] = {}
@@ -247,13 +248,18 @@ class PortfolioAccountingSimulator:
         # Validate M1 ordering once per replay. Rechecking np.diff over the
         # complete multi-year minute array for every dual-touch bar is O(N)
         # per event and can dominate the replay runtime.
-        m1_ordered = (
+        m1_arrays_valid = (
             m1_time_s is not None and m1_high is not None and m1_low is not None
             and len(m1_time_s) > 0
             and len(m1_time_s) == len(m1_high) == len(m1_low)
             and (m1_spread_points is None or len(m1_spread_points) == len(m1_time_s))
-            and bool(np.all(np.diff(m1_time_s) > 0))
         )
+        if m1_ordered is None:
+            # Direct simulator callers retain defensive validation. The normal
+            # research path supplies the result already certified by MT5History.freeze().
+            m1_ordered = m1_arrays_valid and bool(np.all(np.diff(m1_time_s) > 0))
+        else:
+            m1_ordered = bool(m1_ordered) and m1_arrays_valid
         sorted_bars = range(first_bar, last_bar + 1)
         # Convert the full source array once; accessing spread_pips repeatedly
         # constructs a fresh array and scales poorly with long historical windows.
