@@ -252,7 +252,7 @@ class FakeMT5API:
         self._check=SimpleNamespace(retcode=0)
         self._send=SimpleNamespace(retcode=10009,order=10,deal=11)
     def symbol_info(self,symbol):
-        return SimpleNamespace(filling_mode=2,trade_exemode=2)
+        return SimpleNamespace(filling_mode=3,trade_exemode=2)
     def order_check(self,request):
         self.checked+=1;return self._check
     def order_send(self,request):
@@ -267,9 +267,19 @@ def test_mt5_adapter_prechecks_then_sends_identically_for_any_account():
         broker.login=login
         request=broker.order_request(symbol='EURUSD',direction='BUY',volume=.1,
             price=1.1,sl=1.09,tp=1.12,deviation=10,magic=520052,comment='QRL123')
-        assert request['type_filling']==broker._mt5.ORDER_FILLING_IOC
+        assert request['type_filling']==broker._mt5.ORDER_FILLING_FOK
         assert broker.submit(request)=={'status':'FILLED','retcode':10009,'order':10,'deal':11}
         assert broker._mt5.checked==1 and broker._mt5.sent==1
+
+
+def test_mt5_adapter_rejects_symbols_without_fok_partial_fills_disabled():
+    from quant_rl.execution.mt5_broker import MT5Broker
+    broker=object.__new__(MT5Broker)
+    broker._mt5=FakeMT5API()
+    broker._mt5.symbol_info=lambda symbol: SimpleNamespace(filling_mode=2,trade_exemode=2)
+    with pytest.raises(ValueError,match='does not support FOK'):
+        broker.order_request(symbol='EURUSD',direction='BUY',volume=.1,
+            price=1.1,sl=1.09,tp=1.12,deviation=10,magic=520052,comment='QRL123')
 
 
 def test_mt5_adapter_rejection_never_sends_and_unknown_state_is_not_success():
