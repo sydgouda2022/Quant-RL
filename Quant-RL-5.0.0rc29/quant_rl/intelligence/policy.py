@@ -212,7 +212,8 @@ class PPOTrader:
             if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
                 raise TimeoutError('Global training wall-time budget exhausted at episode boundary')
             # A fresh episode starts at the same chronologically bounded training history.
-            sim,samples=self.replay(obs,spec,train,cfg,deterministic=False,m1=m1)
+            sim,samples=self.replay(obs,spec,train,cfg,deterministic=False,m1=m1,
+                                      deadline_monotonic=deadline_monotonic)
             if samples:
                 events=sim.decision_events
                 rewards=np.array([e.reward_account_ccy for e in events],dtype=np.float32)
@@ -270,7 +271,8 @@ class PPOTrader:
                                or episode + 1 == self.settings.episodes)
             validation = None
             if should_validate:
-                validation,_ = self.replay(obs,spec,val,cfg,deterministic=True,m1=m1)
+                validation,_ = self.replay(obs,spec,val,cfg,deterministic=True,m1=m1,
+                                              deadline_monotonic=deadline_monotonic)
                 # Never backpropagate across validation observations.
                 score=validation.learning_reward_account_ccy
                 if score > best:
