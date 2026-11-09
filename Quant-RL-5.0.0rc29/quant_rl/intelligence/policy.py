@@ -168,13 +168,16 @@ class PPOTrader:
                     max_risk_per_trade_pct=cfg.intelligence.position_sizing.max_risk_per_trade_pct,
                     max_drawdown_pct=cfg.qualification.max_drawdown_pct)
         m1=m1 or (None,None,None,None)
+        # FrozenDataset validates ordering once while building its immutable
+        # M1 arrays. Reuse that certificate across every PPO episode/replay.
+        m1_ordered=m1[4] if len(m1)>4 else None
         def execute_replay():
             return engine.simulate(obs,decide,spec,start_index=int(indices[0]),end_index=int(indices[-1]),
                          cost_multiplier=cost_multiplier,inactivity_penalty_lots=cfg.ppo.penalty_reference_lots,
                          market_context_cache=self._market_context_cache,
                          m1_time_s=m1[0],m1_high=m1[1],m1_low=m1[2],
                          m1_spread_points=m1[3] if len(m1)>3 else None,
-                         deadline_monotonic=deadline_monotonic)
+                         deadline_monotonic=deadline_monotonic,m1_ordered=m1_ordered)
         if deterministic:
             sim=execute_replay()
         else:
